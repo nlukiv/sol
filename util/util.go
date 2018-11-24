@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/jmoiron/jsonq"
+	"github.com/sony/sonyflake"
 	"github.com/vanng822/go-solr/solr"
 	"net/http"
 	"strings"
@@ -58,4 +59,24 @@ func check(e error) {
 	if e != nil {
 		fmt.Println(e)
 	}
+}
+
+func GetID() (uint64, error) {
+	flake := sonyflake.NewSonyflake(sonyflake.Settings{})
+	id, err := flake.NextID()
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+type Entity struct {
+	DocumentID    uint64
+	Entity        string
+	EnglishEntity string
+	Positions     []int
+}
+
+func MakeEntity(documentID uint64, entity, englishEntity string, positions []int) Entity {
+	return Entity{DocumentID: documentID, Entity: entity, EnglishEntity: englishEntity, Positions: positions}
 }
