@@ -1,7 +1,7 @@
-package solr
+package backend_interface
 
 import (
-//"repustate-deepsearch/storage/domain"
+	"time"
 )
 
 type DocPropertyType int
@@ -11,6 +11,7 @@ const (
 	SENTIMENT
 	THEME
 	ENTITY
+	CREATED
 )
 
 type ComparerType int
@@ -60,4 +61,48 @@ type QueryParams struct {
 	Limit int
 	Skip  int
 	Take  int
+}
+
+type ClientDocument struct {
+	ClientDocumentShort
+	DocumentTitle string    `gorm:"column:documenttitle;not null"`
+	Document      string    `gorm:"column:document;not null"`
+	LanguageCode  string    `gorm:"column:languagecode;not null"`
+	CreatedAt     time.Time `gorm:"column:created;not null"`
+	Sentiment     string    `gorm:"column:sentiment;not null"`
+}
+
+type ClientDocumentShort struct {
+	DocumentID uint64 `gorm:"primary_key;column:documentid;not null"`
+}
+
+func (p DocPropertyType) String() string {
+	if p == LANGUAGE {
+		return "languagecode"
+	}
+	if p == SENTIMENT {
+		return "sentiment"
+	}
+	if p == THEME {
+		return "themeid"
+	}
+	if p == ENTITY {
+		return "englishentity"
+	}
+	if p == CREATED {
+		return "created"
+	}
+
+	return `"unknown property"`
+}
+
+func (c ComparerType) String() string {
+	if c == EQUAL {
+		return "="
+	}
+	if c == LIKE {
+		return "LIKE"
+	}
+
+	return `"unknown comparer type"`
 }

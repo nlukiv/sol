@@ -8,9 +8,11 @@ import (
 	"github.com/vanng822/go-solr/solr"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func FormatRequest(r *http.Request) string {
+
 	// Create return string
 	var request []string
 	// Add the request string
@@ -79,4 +81,15 @@ type Entity struct {
 
 func MakeEntity(documentID uint64, entity, englishEntity string, positions []int) Entity {
 	return Entity{DocumentID: documentID, Entity: entity, EnglishEntity: englishEntity, Positions: positions}
+}
+
+func StringToTime(s string) (time.Time, error) {
+	layout := "2006-01-02 15:04:05.000"
+	t, err := time.Parse(layout, s)
+	if err != nil {
+		t := time.Time{}
+		return t, err
+	}
+
+	return t, nil
 }
