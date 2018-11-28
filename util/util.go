@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/jmoiron/jsonq"
-	"github.com/sony/sonyflake"
+	"github.com/segmentio/ksuid"
 	"github.com/vanng822/go-solr/solr"
+	"hash/fnv"
 	"net/http"
 	"strings"
 	"time"
@@ -64,12 +65,13 @@ func check(e error) {
 }
 
 func GetID() (uint64, error) {
-	flake := sonyflake.NewSonyflake(sonyflake.Settings{})
-	id, err := flake.NextID()
+	bytes := ksuid.New().Bytes()
+	h := fnv.New64a()
+	_, err := h.Write(bytes)
 	if err != nil {
 		return 0, err
 	}
-	return id, nil
+	return h.Sum64(), nil
 }
 
 type Entity struct {

@@ -13,7 +13,13 @@ import (
 const clientIdTest = "2840"
 const solrUrl = "http://localhost:8983/solr"
 
-var corePrefixes = []string{"clientdocumententities_", "clientdocumentthemes_", "clientdocuments_"}
+type Core string
+
+const (
+	DOCUMENTS Core = "clientdocuments"
+	ENTITIES  Core = "clientdocumententities"
+	THEMES    Core = "clientdocumentthemes"
+)
 
 type DocPropertyType int
 
@@ -90,10 +96,16 @@ func main() {
 	//check(err)
 	//
 	//fmt.Println(di)
-	ids := []uint64{321, 123}
-	docs, _ := GetDocuments(clientIdTest, ids)
 
-	fmt.Println(docs)
+	for i := 0; i < 33; i++ {
+		id, _ := util.GetID()
+		fmt.Println(id)
+	}
+
+	//ids := []uint64{321, 123}
+	//docs, _ := GetDocuments(clientIdTest, ids)
+	//
+	//fmt.Println(docs)
 
 	//DeleteIndex(clientIdTest)
 	//write()
@@ -105,19 +117,24 @@ func main() {
 func GetDocumentIDs(clientID string, cond PropertyCondition) ([]uint64, error) {
 
 	var core string
+
+	// define which core to send query to
 	switch cond.Property {
 	case LANGUAGE, SENTIMENT, CREATED:
-		core = "clientdocuments_" + clientID
+		core = fmt.Sprintf("%s_%s", DOCUMENTS, clientID)
 	case ENTITY:
-		core = "clientdocumententities_" + clientID
+		core = fmt.Sprintf("%s_%s", ENTITIES, clientID)
 	case THEME:
-		core = "clientdocumentthemes_" + clientID
+		core = fmt.Sprintf("%s_%s", THEMES, clientID)
 	}
+
+	// create connection to the core
 	si, err := solr.NewSolrInterface("http://localhost:8983/solr", core)
 	if err != nil {
 		return nil, err
 	}
 	query := solr.NewQuery()
+	query.FieldList("documentID")
 
 	switch cond.Condition {
 	case EQUAL:
@@ -184,12 +201,19 @@ func GetDocumentIDs(clientID string, cond PropertyCondition) ([]uint64, error) {
 func GetDocuments(clientID string, ids []uint64) ([]*ClientDocument, error) {
 	var docs []*ClientDocument
 
-	si, err := solr.NewSolrInterface("http://localhost:8983/solr", corePrefixes[2]+clientID)
+	si, err := solr.NewSolrInterface("http://localhost:8983/solr", fmt.Sprintf("%s_%s", DOCUMENTS, clientID))
 	if err != nil {
 		return nil, err
 	}
 
 	for _, id := range ids {
+
+		// another possible implementation is to not send each id in a separate query, but
+		// use filterQuery and put all ids in there. example
+		// http://localhost:8983/solr/clientdocuments_2840/select?fq=documentID:(123%20OR%20234)&q=*:*
+		// downside - this way, queries may get TOO long if the id list is long
+		// https://stackoverflow.com/questions/7594915/apache-solr-or-in-filter-query
+
 		query := solr.NewQuery()
 		query.Q(fmt.Sprintf("documentID:%d", id))
 		s := si.Search(query)
@@ -198,9 +222,7 @@ func GetDocuments(clientID string, ids []uint64) ([]*ClientDocument, error) {
 			return nil, err
 		}
 
-		//var docID, title, document, lang, created, sentiment string
-
-		doc := r.Results.Docs[0]
+		doc := r.Results.Docs[0] // we definitely get one element, since querying by unique id
 		docID := doc.Get("documentID")
 		title := doc.Get("documentTitle").(string)
 		document := doc.Get("document").(string)
@@ -222,7 +244,6 @@ func GetDocuments(clientID string, ids []uint64) ([]*ClientDocument, error) {
 		}
 
 		docs = append(docs, &clientDocument)
-
 	}
 
 	return docs, nil
@@ -283,9 +304,11 @@ func CheckConnection() error {
 
 // checks that client's storage exists. Creates new one if not
 func EnsureClientStorage(clientID string) error {
+	corePrefixes := []Core{DOCUMENTS, ENTITIES, THEMES}
 
 	for _, elem := range corePrefixes {
-		core := elem + "_" + clientID
+		core := fmt.Sprintf("%s_%s", elem, clientID)
+
 		coreExists, err := CoreExists(core)
 		if err != nil {
 			return err
@@ -301,7 +324,7 @@ func EnsureClientStorage(clientID string) error {
 	return nil
 }
 
-// drops [к чєртям собачим] entire index with 'clientID'
+// drops entire index with 'clientID'
 func DeleteIndex(clientID string) error {
 	cores := []string{"clientdocumententities", "clientdocumentthemes", "clientdocuments"}
 
@@ -323,7 +346,7 @@ func DeleteIndex(clientID string) error {
 }
 
 // Add document to client index
-func AddDocument(documentid uint64, clientID string, title, text, languageCode, sentiment string,
+func AddDocument(documentID uint64, clientID string, title, text, languageCode, sentiment string,
 	entitiesFound []util.Entity, themes []string) error {
 
 	err := EnsureClientStorage(clientID)
@@ -340,7 +363,7 @@ func AddDocument(documentid uint64, clientID string, title, text, languageCode, 
 
 	var documents []solr.Document
 	clientDocument := make(solr.Document)
-	clientDocument.Set("documentID", documentid)
+	clientDocument.Set("documentID", documentID)
 	clientDocument.Set("documentTitle", title)
 	clientDocument.Set("document", text)
 	clientDocument.Set("languageCode", languageCode)
@@ -365,7 +388,7 @@ func AddDocument(documentid uint64, clientID string, title, text, languageCode, 
 	documents = nil
 	for _, entity := range entitiesFound {
 		clientDocumentEntity := make(solr.Document)
-		clientDocumentEntity.Set("documentID", documentid)
+		clientDocumentEntity.Set("documentID", documentID)
 		clientDocumentEntity.Set("entity", entity.Entity)
 		clientDocumentEntity.Set("englishEntity", entity.EnglishEntity)
 		clientDocumentEntity.Set("positions", entity.Positions)
@@ -377,7 +400,7 @@ func AddDocument(documentid uint64, clientID string, title, text, languageCode, 
 		return err
 	}
 
-	// 3. Створється запис в табличку `clientdocumentthemes_%indexID%` з наступними полями: `themeid, documentid`. (edited)
+	// 3. Створється запис в табличку `clientdocumentthemes_%indexID%` з наступними полями: `themeid, documentID`. (edited)
 
 	cdt := "clientdocumentthemes_" + clientID
 
@@ -389,7 +412,7 @@ func AddDocument(documentid uint64, clientID string, title, text, languageCode, 
 	documents = nil
 	for _, theme := range themes {
 		clientDocumentTheme := make(solr.Document)
-		clientDocumentTheme.Set("documentID", documentid)
+		clientDocumentTheme.Set("documentID", documentID)
 		clientDocumentTheme.Set("themeID", theme)
 		documents = append(documents, clientDocumentTheme)
 	}
@@ -409,10 +432,11 @@ func AddDocument(documentid uint64, clientID string, title, text, languageCode, 
 
 // deletes document with 'documentID' from client 'clientID' collection
 func DeleteDocument(documentID, clientID string) error {
+	corePrefixes := []Core{DOCUMENTS, ENTITIES, THEMES}
 
 	for _, corePrefix := range corePrefixes {
-
-		si, err := solr.NewSolrInterface(solrUrl, corePrefix+clientID)
+		core := fmt.Sprintf("%s_%s", corePrefix, clientID)
+		si, err := solr.NewSolrInterface(solrUrl, core)
 		if err != nil {
 			return err
 		}
@@ -426,12 +450,7 @@ func DeleteDocument(documentID, clientID string) error {
 
 	}
 
-	err := ReloadAll()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return ReloadAll()
 }
 
 // @Deprecated
