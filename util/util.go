@@ -7,6 +7,7 @@ import (
 	"github.com/segmentio/ksuid"
 	"github.com/vanng822/go-solr/solr"
 	"hash/fnv"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -64,14 +65,32 @@ func check(e error) {
 	}
 }
 
-func GetID() (uint64, error) {
+func GetID() uint64 {
 	bytes := ksuid.New().Bytes()
 	h := fnv.New64a()
-	_, err := h.Write(bytes)
-	if err != nil {
-		return 0, err
+	h.Write(bytes)
+	return h.Sum64()
+}
+
+//
+//func GetID() (uint64, error) {
+//	bytes := ksuid.New().Bytes()
+//	h := fnv.New64a()
+//	_, err := h.Write(bytes)
+//	if err != nil {
+//		return 0, err
+//	}
+//	return h.Sum64(), nil
+//}
+
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func RandStringBytes(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letterBytes[rand.Intn(len(letterBytes))]
 	}
-	return h.Sum64(), nil
+	return string(b)
 }
 
 type Entity struct {
@@ -94,4 +113,12 @@ func StringToTime(s string) (time.Time, error) {
 	}
 
 	return t, nil
+}
+
+func ToIntSlice(s []interface{}) []int {
+	ints := make([]int, len(s))
+	for i := range s {
+		ints[i] = int(s[i].(float64))
+	}
+	return ints
 }

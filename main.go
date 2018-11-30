@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/vanng822/go-solr/solr"
+	"math/rand"
 	"net/url"
 	"reflect"
 	"sol/util"
@@ -77,16 +78,31 @@ type PropertyCondition struct {
 
 type ClientDocument struct {
 	ClientDocumentShort
-	DocumentTitle string    `gorm:"column:documenttitle;not null"`
-	Document      string    `gorm:"column:document;not null"`
-	LanguageCode  string    `gorm:"column:languagecode;not null"`
-	CreatedAt     time.Time `gorm:"column:created;not null"`
-	Sentiment     string    `gorm:"column:sentiment;not null"`
+	DocumentTitle string
+	Document      string
+	LanguageCode  string
+	CreatedAt     time.Time
+	Sentiment     string
 }
 
 type ClientDocumentShort struct {
-	DocumentID uint64 `gorm:"primary_key;column:documentid;not null"`
+	DocumentID uint64
 }
+
+type ClientDocumentEntity struct {
+	ClientDocumentEntityShort
+
+	ID        uint64
+	Entity    string
+	Positions Positions
+}
+
+type ClientDocumentEntityShort struct {
+	DocumentID    uint64
+	EnglishEntity string
+}
+
+type Positions []int
 
 func main() {
 
@@ -97,10 +113,9 @@ func main() {
 	//
 	//fmt.Println(di)
 
-	for i := 0; i < 33; i++ {
-		id, _ := util.GetID()
-		fmt.Println(id)
-	}
+	a, e := GetEntities(clientIdTest)
+	check(e)
+	fmt.Println(a)
 
 	//ids := []uint64{321, 123}
 	//docs, _ := GetDocuments(clientIdTest, ids)
@@ -111,6 +126,9 @@ func main() {
 	//write()
 	//DeleteDocument("345", clientIdTest)
 
+}
+func randomint(min int, max int) int {
+	return rand.Intn(max-min) + min
 }
 
 // get docs with sentiment=neu: PropertyCondition.Condition=EQUAL PropertyCondition.Value=neu, PropertyCondition.Property=sentiment
@@ -158,46 +176,48 @@ func GetDocumentIDs(clientID string, cond PropertyCondition) ([]uint64, error) {
 	return res, nil
 }
 
-//func GetEntities(clientID string, cond PropertyCondition) ([]*domain.ClientDocumentEntity, error){
-//	var core string
-//
-//	switch cond.Property {
-//	case LANGUAGE, SENTIMENT, CREATED:
-//		core = "clientdocuments_" + clientID
-//	case ENTITY:
-//		core = "clientdocumententities_" + clientID
-//	case THEME:
-//		core = "clientdocumentthemes_" + clientID
-//	}
-//
-//	si, err := solr.NewSolrInterface("http://localhost:8983/solr", core)
-//	if err != nil {
-//		return nil, err
-//	}
-//	query := solr.NewQuery()
-//
-//	switch cond.Condition {
-//	case EQUAL:
-//		query.Q(fmt.Sprintf("%s:%s", cond.Property, cond.Value))
-//	case LIKE:
-//		query.Q(fmt.Sprintf("%s:%s~", cond.Property, cond.Value))
-//	}
-//
-//	s := si.Search(query)
-//	r, err := s.Result(nil)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	var res []uint64
-//	for _, doc := range r.Results.Docs {
-//		k := doc.Get("documentID")
-//		res = append(res, uint64(k.([]interface{})[0].(float64)))
-//	}
-//
-//	return res, nil
-//}
+func GetEntities(clientID string) ([]*ClientDocumentEntity, error) {
+	var entities []*ClientDocumentEntity
 
+	si, err := solr.NewSolrInterface("http://localhost:8983/solr", fmt.Sprintf("%s_%s", ENTITIES, clientID))
+	if err != nil {
+		return nil, err
+	}
+
+	query := solr.NewQuery()
+	query.Q("*:*")
+	query.Rows(2147483647) // todo add sophisticated rows handling - pagination
+	s := si.Search(query)
+	r, err := s.Result(nil)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println(len(r.Results.Docs))
+	for _, item := range r.Results.Docs {
+		docID := uint64(item.Get("documentID").([]interface{})[0].(float64))
+		englishEntity := item.Get("englishEntity").([]interface{})[0].(string)
+		entity := item.Get("entity").([]interface{})[0].(string)
+		positions := util.ToIntSlice(item.Get("positions").([]interface{}))
+
+		cdes := ClientDocumentEntityShort{docID, englishEntity}
+
+		clientDocumentEntity := ClientDocumentEntity{
+			cdes,
+			docID, // todo not sure if this ID is required here
+			entity,
+			positions,
+		}
+
+		entities = append(entities, &clientDocumentEntity)
+	}
+
+	for i, a := range entities {
+		fmt.Printf("%d:  %t\n", i, a)
+	}
+	return entities, nil
+}
+
+// get all documents for specified ids
 func GetDocuments(clientID string, ids []uint64) ([]*ClientDocument, error) {
 	var docs []*ClientDocument
 
@@ -221,7 +241,7 @@ func GetDocuments(clientID string, ids []uint64) ([]*ClientDocument, error) {
 		if err != nil {
 			return nil, err
 		}
-
+		//todo handle absence of document for current id
 		doc := r.Results.Docs[0] // we definitely get one element, since querying by unique id
 		docID := doc.Get("documentID")
 		title := doc.Get("documentTitle").(string)
@@ -292,6 +312,37 @@ func write() {
 		entities = append(entities, util.MakeEntity(documentid, "JavaScript", "JavaScript", []int{70, 72}))
 		err = AddDocument(documentid, clientIdTest, "my document654", "Just look at any bootcamps for devs this days , it's basically always JS   MongoDB. Not Postgres or MySQL , Mongo. Mongo has become the new MySQL for a lot of devs these days.",
 			"en", "mia", entities, themes)
+		check(err)
+	}
+}
+
+func writeRandom(amount int) {
+	for i := 0; i < amount; i++ {
+		docID := util.GetID()
+		title := "title-" + util.RandStringBytes(128)
+		text := "text-" + util.RandStringBytes(128)
+		sent := util.RandStringBytes(3)
+
+		entities := []util.Entity{}
+		for i := 0; i < randomint(2, 8); i++ {
+			positions := []int{}
+			for i := 0; i < randomint(3, 7); i++ {
+				positions = append(positions, randomint(1, 256))
+			}
+
+			entity := util.Entity{docID, util.RandStringBytes(randomint(64, 128)),
+				util.RandStringBytes(randomint(64, 128)), positions}
+			entities = append(entities, entity)
+
+		}
+
+		themes := []string{}
+		for i := 0; i < randomint(3, 7); i++ {
+			theme := util.RandStringBytes(32)
+			themes = append(themes, theme)
+		}
+
+		err := AddDocument(docID, clientIdTest, title, text, "EN", sent, entities, themes)
 		check(err)
 	}
 }
