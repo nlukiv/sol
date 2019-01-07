@@ -1,17 +1,20 @@
 package main
 
 import (
+	"./util"
+	"encoding/json"
 	"fmt"
 	"github.com/vanng822/go-solr/solr"
 	"math/rand"
 	"net/url"
 	"reflect"
-	"sol/util"
 	"strconv"
 	"time"
 )
 
-const clientIdTest = "2840"
+const clientIdTest = "4444"
+
+//const solrUrl = "http://185.227.108.145:8983/solr"
 const solrUrl = "http://localhost:8983/solr"
 
 type Core string
@@ -81,7 +84,7 @@ type ClientDocument struct {
 	DocumentTitle string
 	Document      string
 	LanguageCode  string
-	CreatedAt     time.Time
+	CreatedAt     int
 	Sentiment     string
 }
 
@@ -104,35 +107,93 @@ type ClientDocumentEntityShort struct {
 
 type Positions []int
 
+type Position struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+type Entity struct {
+	Phrase          string      `json:"title"`
+	Title           string      `json:"full_title"`
+	Classifications []string    `json:"classifications"`
+	Positions       []*Position `json:"positions"`
+	UrlPageTitle    string
+	inbound         int
+	checkContext    bool
+	doc2vecID       string
+	aliases         []string
+}
+
+type ClientStorage interface {
+	// checks if ClientStorage exists and connection is ok
+	//CheckConnection() error
+
+	// retrieves documents Id for documents that satisfy given condition
+	// if `since` is non-nil and set then query returns IDs for documents dated from `since`
+	// if `until` is non-nil and set then query returns IDs for documents dated before `until`
+	GetDocumentIDs(clientId string, cond PropertyCondition, since, until *int) ([]uint64, error)
+
+	// retrieves document entities across al documents
+	// if `since` is non-nil and set then query returns entities for documents dated from `since`
+	// if `until` is non-nil and set then query returns entities for documents dated before `until`
+	GetEntities(clientId string, since, until *int) ([]*ClientDocumentEntityShort, error)
+
+	// retrieves documents with given IDs
+	// if full is not set, only document ID and timestamp should be filled
+	GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, error)
+
+	// build index with data provided
+	AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, themes []uint64) error
+
+	// deletes document with 'docID' from client 'clientID' collection
+	// DeleteDocument(clientID, docID string) error
+
+	// checks that client's storage exists
+	// Exists(clientID string) bool
+
+	// creates new storage for client
+	// Create(clientId, apikey, index string) error
+
+	// returns all indices stored for account with ApiKey
+	// GetIndicesForAccount(apikey string) ([]string, error)
+
+	// drops entire index with 'indexID'
+	// DeleteIndex(indexID, clientID, apiKey string) error
+}
+
 func main() {
 
 	//pc := PropertyCondition{Condition: LIKE, Value: "keu", Property: SENTIMENT}
-
+	//
 	//di, err := GetDocumentIDs(clientIdTest, pc)
 	//check(err)
 	//
 	//fmt.Println(di)
-
-	a, e := GetEntities(clientIdTest)
-	check(e)
-	fmt.Println(a)
-
+	//a, e := GetEntities(clientIdTest)
+	//check(e)
+	//fmt.Println(a)
 	//ids := []uint64{321, 123}
 	//docs, _ := GetDocuments(clientIdTest, ids)
 	//
 	//fmt.Println(docs)
-
 	//DeleteIndex(clientIdTest)
 	//write()
 	//DeleteDocument("345", clientIdTest)
+	rand.Seed(time.Now().UnixNano())
 
-}
-func randomint(min int, max int) int {
-	return rand.Intn(max-min) + min
+	err := Create(clientIdTest, "apikey"+util.RandStringBytes(16), "index"+util.RandStringBytes(8))
+	check(err)
+
+	for i := 0; i < 3; i++ {
+		write()
+	}
+	//_, err := GetEntities(clientIdTest,nil,nil)
+	//check(err)
+
 }
 
 // get docs with sentiment=neu: PropertyCondition.Condition=EQUAL PropertyCondition.Value=neu, PropertyCondition.Property=sentiment
-func GetDocumentIDs(clientID string, cond PropertyCondition) ([]uint64, error) {
+func GetDocumentIDs(clientID string, cond PropertyCondition, since, until *int) ([]uint64, error) {
 
 	var core string
 
@@ -147,7 +208,7 @@ func GetDocumentIDs(clientID string, cond PropertyCondition) ([]uint64, error) {
 	}
 
 	// create connection to the core
-	si, err := solr.NewSolrInterface("http://localhost:8983/solr", core)
+	si, err := solr.NewSolrInterface(solrUrl, core)
 	if err != nil {
 		return nil, err
 	}
@@ -176,176 +237,133 @@ func GetDocumentIDs(clientID string, cond PropertyCondition) ([]uint64, error) {
 	return res, nil
 }
 
-func GetEntities(clientID string) ([]*ClientDocumentEntity, error) {
-	var entities []*ClientDocumentEntity
+//func GetEntities(clientID string) ([]*ClientDocumentEntity, error)
 
-	si, err := solr.NewSolrInterface("http://localhost:8983/solr", fmt.Sprintf("%s_%s", ENTITIES, clientID))
+//retrieves document entities across al documents
+//if `since` is non-nil and set then query returns entities for documents dated from `since`
+//if `until` is non-nil and set then query returns entities for documents dated before `until`
+func GetEntities(clientID string, since, until *int) ([]*ClientDocumentEntityShort, error) {
+	if *since > *until {
+		return nil, fmt.Errorf("since is later than until")
+	}
+
+	var entities []*ClientDocumentEntityShort
+
+	si, err := solr.NewSolrInterface(solrUrl, fmt.Sprintf("clientdocuments_%s", clientID))
 	if err != nil {
 		return nil, err
 	}
 
+	sinceStr := "*"
+	untilStr := "*"
+	if since != nil {
+		sinceStr = strconv.Itoa(*since)
+	}
+	if until != nil {
+		untilStr = strconv.Itoa(*until)
+	}
+
 	query := solr.NewQuery()
-	query.Q("*:*")
+	query.Q(fmt.Sprintf("createdAt:[%s TO %s]", sinceStr, untilStr))
 	query.Rows(2147483647) // todo add sophisticated rows handling - pagination
 	s := si.Search(query)
+
 	r, err := s.Result(nil)
 	if err != nil {
 		return nil, err
 	}
 	fmt.Println(len(r.Results.Docs))
-	for _, item := range r.Results.Docs {
-		docID := uint64(item.Get("documentID").([]interface{})[0].(float64))
-		englishEntity := item.Get("englishEntity").([]interface{})[0].(string)
-		entity := item.Get("entity").([]interface{})[0].(string)
-		positions := util.ToIntSlice(item.Get("positions").([]interface{}))
 
-		cdes := ClientDocumentEntityShort{docID, englishEntity}
-
-		clientDocumentEntity := ClientDocumentEntity{
-			cdes,
-			docID, // todo not sure if this ID is required here
-			entity,
-			positions,
-		}
-
-		entities = append(entities, &clientDocumentEntity)
+	data, err := json.Marshal(r.Results.Docs)
+	if err != nil {
+		return nil, err
 	}
+	fmt.Println(string(data))
 
-	for i, a := range entities {
-		fmt.Printf("%d:  %t\n", i, a)
+	var doc []solr.Document
+	err = json.Unmarshal(data, &doc)
+	if err != nil {
+		return nil, err
 	}
+	//fmt.Println(doc)
+
+	//for _, item := range r.Results.Docs {
+	//	docID := uint64(item.Get("documentID").([]interface{})[0].(float64))
+	//	englishEntity := item.Get("englishEntity").([]interface{})[0].(string)
+	//	entity := item.Get("entity").([]interface{})[0].(string)
+	//	positions := util.ToIntSlice(item.Get("positions").([]interface{}))
+	//
+	//	cdes := ClientDocumentEntityShort{docID, englishEntity}
+	//
+	//	clientDocumentEntity := ClientDocumentEntityShort{
+	//		cdes,
+	//		docID, // todo not sure if this ID is required here
+	//		entity,
+	//		positions,
+	//	}
+	//
+	//	entities = append(entities, &clientDocumentEntity)
+	//}
+	//
+	//for i, a := range entities {
+	//	fmt.Printf("%d:  %t\n", i, a)
+	//}
 	return entities, nil
 }
 
 // get all documents for specified ids
-func GetDocuments(clientID string, ids []uint64) ([]*ClientDocument, error) {
-	var docs []*ClientDocument
 
-	si, err := solr.NewSolrInterface("http://localhost:8983/solr", fmt.Sprintf("%s_%s", DOCUMENTS, clientID))
-	if err != nil {
-		return nil, err
-	}
-
-	for _, id := range ids {
-
-		// another possible implementation is to not send each id in a separate query, but
-		// use filterQuery and put all ids in there. example
-		// http://localhost:8983/solr/clientdocuments_2840/select?fq=documentID:(123%20OR%20234)&q=*:*
-		// downside - this way, queries may get TOO long if the id list is long
-		// https://stackoverflow.com/questions/7594915/apache-solr-or-in-filter-query
-
-		query := solr.NewQuery()
-		query.Q(fmt.Sprintf("documentID:%d", id))
-		s := si.Search(query)
-		r, err := s.Result(nil)
-		if err != nil {
-			return nil, err
-		}
-		//todo handle absence of document for current id
-		doc := r.Results.Docs[0] // we definitely get one element, since querying by unique id
-		docID := doc.Get("documentID")
-		title := doc.Get("documentTitle").(string)
-		document := doc.Get("document").(string)
-		lang := doc.Get("languageCode").(string)
-		created, err := util.StringToTime(doc.Get("created").(string))
-		if err != nil {
-			return nil, err
-		}
-		sentiment := doc.Get("sentiment").(string)
-
-		cds := ClientDocumentShort{docID.(uint64)}
-		clientDocument := ClientDocument{
-			cds,
-			title,
-			document,
-			lang,
-			created,
-			sentiment,
-		}
-
-		docs = append(docs, &clientDocument)
-	}
-
-	return docs, nil
-}
-
-func write() {
-	if CheckConnection() == nil {
-		documentid := uint64(321)
-
-		entities := []util.Entity{}
-		entities = append(entities, util.MakeEntity(documentid, "MongoDB", "MongoDB", []int{75, 82, 115, 120, 108, 113}))
-		entities = append(entities, util.MakeEntity(documentid, "PostgreSQL", "PostgreSQL", []int{88, 96}))
-		entities = append(entities, util.MakeEntity(documentid, "MySQL", "MySQL", []int{100, 105, 140, 145}))
-		entities = append(entities, util.MakeEntity(documentid, "JavaScript", "JavaScript", []int{70, 72}))
-		themes := []string{"5", "8"}
-
-		err := AddDocument(documentid, clientIdTest, "my document321", "Just look at any bootcamps for devs this days , it's basically always JS   MongoDB. Not Postgres or MySQL , Mongo. Mongo has become the new MySQL for a lot of devs these days.",
-			"en", "reu", entities, themes)
-		check(err)
-
-		documentid = 432
-		entities = nil
-		entities = append(entities, util.MakeEntity(documentid, "MongoDB", "MongoDB", []int{75, 82, 115, 120, 108, 113}))
-		entities = append(entities, util.MakeEntity(documentid, "PostgreSQL", "PostgreSQL", []int{88, 96}))
-		entities = append(entities, util.MakeEntity(documentid, "MySQL", "MySQL", []int{100, 105, 140, 145}))
-		entities = append(entities, util.MakeEntity(documentid, "JavaScript", "JavaScript", []int{70, 72}))
-		err = AddDocument(documentid, clientIdTest, "my document432", "Just look at any bootcamps for devs this days , it's basically always JS   MongoDB. Not Postgres or MySQL , Mongo. Mongo has become the new MySQL for a lot of devs these days.",
-			"en", "sia", entities, themes)
-		check(err)
-
-		documentid = 543
-		entities = nil
-		entities = append(entities, util.MakeEntity(documentid, "MongoDB", "MongoDB", []int{75, 82, 115, 120, 108, 113}))
-		entities = append(entities, util.MakeEntity(documentid, "PostgreSQL", "PostgreSQL", []int{88, 96}))
-		entities = append(entities, util.MakeEntity(documentid, "MySQL", "MySQL", []int{100, 105, 140, 145}))
-		entities = append(entities, util.MakeEntity(documentid, "JavaScript", "JavaScript", []int{70, 72}))
-		err = AddDocument(documentid, clientIdTest, "my document543", "Just look at any bootcamps for devs this days , it's basically always JS   MongoDB. Not Postgres or MySQL , Mongo. Mongo has become the new MySQL for a lot of devs these days.",
-			"en", "bia", entities, themes)
-		check(err)
-
-		documentid = 654
-		entities = nil
-		entities = append(entities, util.MakeEntity(documentid, "MongoDB", "MongoDB", []int{75, 82, 115, 120, 108, 113}))
-		entities = append(entities, util.MakeEntity(documentid, "PostgreSQL", "PostgreSQL", []int{88, 96}))
-		entities = append(entities, util.MakeEntity(documentid, "MySQL", "MySQL", []int{100, 105, 140, 145}))
-		entities = append(entities, util.MakeEntity(documentid, "JavaScript", "JavaScript", []int{70, 72}))
-		err = AddDocument(documentid, clientIdTest, "my document654", "Just look at any bootcamps for devs this days , it's basically always JS   MongoDB. Not Postgres or MySQL , Mongo. Mongo has become the new MySQL for a lot of devs these days.",
-			"en", "mia", entities, themes)
-		check(err)
-	}
-}
-
-func writeRandom(amount int) {
-	for i := 0; i < amount; i++ {
-		docID := util.GetID()
-		title := "title-" + util.RandStringBytes(128)
-		text := "text-" + util.RandStringBytes(128)
-		sent := util.RandStringBytes(3)
-
-		entities := []util.Entity{}
-		for i := 0; i < randomint(2, 8); i++ {
-			positions := []int{}
-			for i := 0; i < randomint(3, 7); i++ {
-				positions = append(positions, randomint(1, 256))
-			}
-
-			entity := util.Entity{docID, util.RandStringBytes(randomint(64, 128)),
-				util.RandStringBytes(randomint(64, 128)), positions}
-			entities = append(entities, entity)
-
-		}
-
-		themes := []string{}
-		for i := 0; i < randomint(3, 7); i++ {
-			theme := util.RandStringBytes(32)
-			themes = append(themes, theme)
-		}
-
-		err := AddDocument(docID, clientIdTest, title, text, "EN", sent, entities, themes)
-		check(err)
-	}
-}
+//todo
+//func GetDocuments(clientID string, ids []uint64) ([]*ClientDocument, error) {
+//	var docs []*ClientDocument
+//
+//	si, err := solr.NewSolrInterface("http://localhost:8983/solr", fmt.Sprintf("%s_%s", DOCUMENTS, clientID))
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	for _, id := range ids {
+//
+//		// another possible implementation is to not send each id in a separate query, but
+//		// use filterQuery and put all ids in there. example
+//		// http://localhost:8983/solr/clientdocuments_2840/select?fq=documentID:(123%20OR%20234)&q=*:*
+//		// downside - this way, queries may get TOO long if the id list is long
+//		// https://stackoverflow.com/questions/7594915/apache-solr-or-in-filter-query
+//
+//		query := solr.NewQuery()
+//		query.Q(fmt.Sprintf("documentID:%d", id))
+//		s := si.Search(query)
+//		r, err := s.Result(nil)
+//		if err != nil {
+//			return nil, err
+//		}
+//		//todo handle absence of document for current id
+//		doc := r.Results.Docs[0] // we definitely get one element, since querying by unique id
+//		docID := doc.Get("documentID")
+//		title := doc.Get("documentTitle").(string)
+//		document := doc.Get("document").(string)
+//		lang := doc.Get("languageCode").(string)
+//		created, err := util.StringToTime(doc.Get("created").(string))
+//		if err != nil {
+//			return nil, err
+//		}
+//		sentiment := doc.Get("sentiment").(string)
+//
+//		cds := ClientDocumentShort{docID.(uint64)}
+//		clientDocument := ClientDocument{
+//			cds,
+//			title,
+//			document,
+//			lang,
+//			created,
+//			sentiment,
+//		}
+//
+//		docs = append(docs, &clientDocument)
+//	}
+//
+//	return docs, nil
+//}
 
 // checks if BackendStorage exists and connection is available
 func CheckConnection() error {
@@ -354,72 +372,137 @@ func CheckConnection() error {
 }
 
 // checks that client's storage exists. Creates new one if not
-func EnsureClientStorage(clientID string) error {
-	corePrefixes := []Core{DOCUMENTS, ENTITIES, THEMES}
 
-	for _, elem := range corePrefixes {
-		core := fmt.Sprintf("%s_%s", elem, clientID)
+//func EnsureClientStorage(clientID string) error {
 
-		coreExists, err := CoreExists(core)
-		if err != nil {
-			return err
-		}
-
-		if !coreExists {
-			_, err := CreateCore(core)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
+//	corePrefixes := []Core{DOCUMENTS, ENTITIES, THEMES}
+//
+//	for _, elem := range corePrefixes {
+//		core := fmt.Sprintf("%s_%s", elem, clientID)
+//
+//		coreExists, err := Exists(core)
+//		if err != nil {
+//			return err
+//		}
+//
+//		if !coreExists {
+//			_, err := Create(core)
+//			if err != nil {
+//				return err
+//			}
+//		}
+//	}
+//	return nil
+//}
 
 // drops entire index with 'clientID'
-func DeleteIndex(clientID string) error {
-	cores := []string{"clientdocumententities", "clientdocumentthemes", "clientdocuments"}
+func DeleteIndex(indexID, clientID, apiKey string) error {
+	cd := "clientdocuments_" + clientID
 
-	for _, elem := range cores {
-		core := elem + "_" + clientID
-		coreExists, err := CoreExists(core)
-		if err != nil {
-			return err
-		}
-
-		if coreExists {
-			_, err := DeleteCore(core, true)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// Add document to client index
-func AddDocument(documentID uint64, clientID string, title, text, languageCode, sentiment string,
-	entitiesFound []util.Entity, themes []string) error {
-
-	err := EnsureClientStorage(clientID)
+	coreExists, err := Exists(cd)
 	if err != nil {
 		return err
 	}
 
-	cd := "clientdocuments_" + clientID
+	if coreExists {
+		_, err := DeleteCore(cd, true)
+		if err != nil {
+			return err
+		}
+	}
+
+	ci := "clientindices"
+
+	si, err := solr.NewSolrInterface(solrUrl, ci)
+	if err != nil {
+		return err
+	}
+
+	params := &url.Values{}
+	params.Add("commit", "true")
+
+	_, err = si.Delete(map[string]interface{}{"query": fmt.Sprintf("apikey:%s AND index:%s", apiKey, indexID)}, params)
+	if err != nil {
+		return err
+	}
+
+	_, err = Reload(cd)
+	return err
+
+	return nil
+}
+
+// returns all indices stored for account with ApiKey
+func GetIndicesForAccount(apikey string) ([]string, error) {
+	var indices []string
+
+	ci := "clientindices"
+
+	si, err := solr.NewSolrInterface(solrUrl, ci)
+	if err != nil {
+		return []string{}, err
+	}
+
+	query := solr.NewQuery()
+	query.Q(fmt.Sprintf("apikey:%s", apikey))
+	query.Rows(2147483647) // todo add sophisticated rows handling - pagination
+	s := si.Search(query)
+	r, err := s.Result(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, item := range r.Results.Docs {
+		index := item.Get("index").([]interface{})
+		indices = append(indices, index[0].(string))
+	}
+
+	return indices, nil
+
+}
+
+//// Add document to client index
+//func AddDocument(documentID uint64, clientID string, title, text, languageCode, sentiment string,
+//	entitiesFound []util.Entity, themes []string) error
+
+// build index with data provided
+func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, themes []uint64) error {
+
+	cd := "clientdocuments_" + clientId
 
 	si, err := solr.NewSolrInterface(solrUrl, cd)
 	if err != nil {
 		return err
 	}
 
+	cde := []solr.Document{}
+	ee := make(solr.Document)
+	for _, entity := range entitiesFound {
+		var positions []int
+		for _, pos := range entity.Positions {
+			positions = append(positions, pos.Start, pos.End)
+		}
+		e := make(solr.Document)
+		e.Set("DocumentID", doc.DocumentID)
+		e.Set("EnglishEntity", entity.UrlPageTitle)
+		e.Set("ID", util.GetID())
+		e.Set("Entity", entity.UrlPageTitle)
+		e.Set("Positions", positions)
+		cde = append(cde, e)
+		ee = e
+	}
+
 	var documents []solr.Document
 	clientDocument := make(solr.Document)
-	clientDocument.Set("documentID", documentID)
-	clientDocument.Set("documentTitle", title)
-	clientDocument.Set("document", text)
-	clientDocument.Set("languageCode", languageCode)
-	//clientDocument.Set("created", created)
-	clientDocument.Set("sentiment", sentiment)
+	clientDocument.Set("documentID", doc.DocumentID)
+	clientDocument.Set("documentTitle", doc.DocumentTitle)
+	clientDocument.Set("document", doc.Document)
+	clientDocument.Set("languageCode", doc.LanguageCode)
+	clientDocument.Set("createdAt", doc.CreatedAt)
+	clientDocument.Set("sentiment", doc.Sentiment)
+	clientDocument.Set("themes", themes)
+	clientDocument.Set("entities", cde)
+	clientDocument.Set("entityTry", ee)
 	documents = append(documents, clientDocument)
 
 	_, err = si.Add(documents, 1, nil)
@@ -427,53 +510,49 @@ func AddDocument(documentID uint64, clientID string, title, text, languageCode, 
 		return err
 	}
 
-	//2. Створється запис в табличку `clientdocumententities_%indexID%` з наступними полями:
-	// `documentID, entity, englishEntity, positions`. всі дані беруться з аргументу `entitiesFound []*entities.Entity`
+	//
+	////2. Створється запис в табличку `clientdocumententities_%indexID%` з наступними полями:
+	//// `documentID, entity, englishEntity, positions`. всі дані беруться з аргументу `entitiesFound []*entities.Entity`
+	//
+	//cde := "clientdocumententities_" + clientID
+	//si, err = solr.NewSolrInterface(solrUrl, cde)
+	//if err != nil {
+	//	return err
+	//}
+	//
+	//documents = nil
+	//for _, entity := range entitiesFound {
+	//	clientDocumentEntity := make(solr.Document)
+	//	clientDocumentEntity.Set("documentID", documentID)
+	//	clientDocumentEntity.Set("entity", entity.Entity)
+	//	clientDocumentEntity.Set("englishEntity", entity.EnglishEntity)
+	//	clientDocumentEntity.Set("positions", entity.Positions)
+	//	documents = append(documents, clientDocumentEntity)
+	//}
+	//
+	//_, err = si.Add(documents, 1, nil)
+	//if err != nil {
+	//	return err
+	//}
+	//
+	//// 3. Створється запис в табличку `clientdocumentthemes_%indexID%` з наступними полями: `themeid, documentID`. (edited)
+	//
+	//cdt := "clientdocumentthemes_" + clientID
+	//
+	//si, err = solr.NewSolrInterface(solrUrl, cdt)
+	//if err != nil {
+	//	return err
+	//}
+	//
+	//documents = nil
+	//for _, theme := range themes {
+	//	clientDocumentTheme := make(solr.Document)
+	//	clientDocumentTheme.Set("documentID", documentID)
+	//	clientDocumentTheme.Set("themeID", theme)
+	//	documents = append(documents, clientDocumentTheme)
+	//}
 
-	cde := "clientdocumententities_" + clientID
-	si, err = solr.NewSolrInterface(solrUrl, cde)
-	if err != nil {
-		return err
-	}
-
-	documents = nil
-	for _, entity := range entitiesFound {
-		clientDocumentEntity := make(solr.Document)
-		clientDocumentEntity.Set("documentID", documentID)
-		clientDocumentEntity.Set("entity", entity.Entity)
-		clientDocumentEntity.Set("englishEntity", entity.EnglishEntity)
-		clientDocumentEntity.Set("positions", entity.Positions)
-		documents = append(documents, clientDocumentEntity)
-	}
-
-	_, err = si.Add(documents, 1, nil)
-	if err != nil {
-		return err
-	}
-
-	// 3. Створється запис в табличку `clientdocumentthemes_%indexID%` з наступними полями: `themeid, documentID`. (edited)
-
-	cdt := "clientdocumentthemes_" + clientID
-
-	si, err = solr.NewSolrInterface(solrUrl, cdt)
-	if err != nil {
-		return err
-	}
-
-	documents = nil
-	for _, theme := range themes {
-		clientDocumentTheme := make(solr.Document)
-		clientDocumentTheme.Set("documentID", documentID)
-		clientDocumentTheme.Set("themeID", theme)
-		documents = append(documents, clientDocumentTheme)
-	}
-
-	_, err = si.Add(documents, 1, nil)
-	if err != nil {
-		return err
-	}
-
-	err = ReloadAll()
+	_, err = Reload(cd)
 	if err != nil {
 		return err
 	}
@@ -483,136 +562,25 @@ func AddDocument(documentID uint64, clientID string, title, text, languageCode, 
 
 // deletes document with 'documentID' from client 'clientID' collection
 func DeleteDocument(documentID, clientID string) error {
-	corePrefixes := []Core{DOCUMENTS, ENTITIES, THEMES}
 
-	for _, corePrefix := range corePrefixes {
-		core := fmt.Sprintf("%s_%s", corePrefix, clientID)
-		si, err := solr.NewSolrInterface(solrUrl, core)
-		if err != nil {
-			return err
-		}
+	cd := "clientdocuments_" + clientID
 
-		params := &url.Values{}
-		params.Add("commit", "true")
-		_, err = si.Delete(map[string]interface{}{"query": "documentID:" + documentID}, params)
-		if err != nil {
-			return err
-		}
-
+	si, err := solr.NewSolrInterface(solrUrl, cd)
+	if err != nil {
+		return err
 	}
 
-	return ReloadAll()
-}
+	params := &url.Values{}
+	params.Add("commit", "true")
 
-// @Deprecated
-//func addCDE() {
-//	cde := "clientdocumententities_" + clientIdTest
-//	//if !CoreExists(cde) {
-//	//	CreateCore(cde)
-//	//}
-//	si, err := solr.NewSolrInterface(solrUrl, cde)
-//	check(err)
-//
-//	var documents []solr.Document
-//	documents = append(documents, CDE(1, 1, "MongoDB", "MongoDB", []int{75, 82, 115, 120, 108, 113}))
-//	documents = append(documents, CDE(2, 1, "PostgreSQL", "PostgreSQL", []int{88, 96}))
-//	documents = append(documents, CDE(3, 1, "MySQL", "MySQL", []int{100, 105, 140, 145}))
-//	documents = append(documents, CDE(4, 1, "JavaScript", "JavaScript", []int{70, 72}))
-//	documents = append(documents, CDE(5, 2, "MongoDB", "MongoDB", []int{75, 82, 115, 120, 108, 113}))
-//	documents = append(documents, CDE(6, 2, "PostgreSQL", "PostgreSQL", []int{88, 96}))
-//	documents = append(documents, CDE(7, 2, "MySQL", "MySQL", []int{100, 105, 140, 145}))
-//	documents = append(documents, CDE(8, 2, "JavaScript", "JavaScript", []int{70, 72}))
-//
-//	sur, err := si.Add(documents, 1, nil)
-//	check(err)
-//
-//	fmt.Println(sur)
-//}
-//func CDE(id, documentID int, entity, englishEntity string, positions []int) solr.Document {
-//	d := make(solr.Document)
-//	d.Set("id", id)
-//	d.Set("DocumentID", documentID)
-//	d.Set("Entity", entity)
-//	d.Set("EnglishEntity", englishEntity)
-//	d.Set("Positions", positions)
-//	return d
-//}
-//
-//func addCDT() {
-//	cdt := "clientdocumentthemes_" + clientIdTest
-//	//if !CoreExists(cdt) {
-//	//	CreateCore(cdt)
-//	//}
-//	si, err := solr.NewSolrInterface(solrUrl, cdt)
-//	check(err)
-//
-//	var documents []solr.Document
-//	documents = append(documents, CDT(1, 1, 8))
-//	documents = append(documents, CDT(2, 2, 8))
-//
-//	sur, err := si.Add(documents, 1, nil)
-//	check(err)
-//
-//	fmt.Println(sur.Result)
-//}
-//func CDT(id int, documentID, themeID int) solr.Document {
-//	d := make(solr.Document)
-//	d.Set("id", id)
-//	d.Set("DocumentID", documentID)
-//	d.Set("ThemeID", themeID)
-//	return d
-//}
-//
-//func addCI() {
-//	ci := "clientindices_" + clientIdTest
-//	//if !CoreExists(ci) {
-//	//	CreateCore(ci)
-//	//}
-//	si, err := solr.NewSolrInterface(solrUrl, ci)
-//	check(err)
-//
-//	var documents []solr.Document
-//	documents = append(documents, CI("daskpdn228dpasud", "my_first_index"))
-//
-//	sur, err := si.Add(documents, 1, nil)
-//	check(err)
-//
-//	fmt.Println(sur.Result)
-//}
-//func CI(apikey, indexName string) solr.Document {
-//	d := make(solr.Document)
-//	d.Set("apikey", apikey)
-//	d.Set("indexname", indexName)
-//	return d
-//}
-//
-//func addCD() {
-//	cd := "clientdocuments_" + clientIdTest
-//	//if !CoreExists(cd) {
-//	//	CreateCore(cd)
-//	//}
-//	si, err := solr.NewSolrInterface(solrUrl, cd)
-//	check(err)
-//
-//	var documents []solr.Document
-//	documents = append(documents, CD(1, "my document2", "Just look at any bootcamps for devs this days , it's basically always JS   MongoDB. Not Postgres or MySQL , Mongo. Mongo has become the new MySQL for a lot of devs these days.", "en", "2018-11-17 17:03:16.148444", "neu"))
-//	documents = append(documents, CD(2, "my document2", "Just look at any bootcamps for devs this days , it's basically always JS   MongoDB. Not Postgres or MySQL , Mongo. Mongo has become the new MySQL for a lot of devs these days.", "en", "2018-11-17 17:17:42.764131", "pos"))
-//
-//	sur, err := si.Add(documents, 1, nil)
-//	check(err)
-//
-//	fmt.Println(sur.Result)
-//}
-//func CD(documentid int, documenttitle, document, languagecode, created, sentiment string) solr.Document {
-//	d := make(solr.Document)
-//	d.Set("documentid", documentid)
-//	d.Set("documenttitle", documenttitle)
-//	d.Set("document", document)
-//	d.Set("languagecode", languagecode)
-//	d.Set("created", created)
-//	d.Set("sentiment", sentiment)
-//	return d
-//}
+	_, err = si.Delete(map[string]interface{}{"query": "documentID:" + documentID}, params)
+	if err != nil {
+		return err
+	}
+
+	_, err = Reload(cd)
+	return err
+}
 
 func typeof(v interface{}) string {
 	return reflect.TypeOf(v).String()
@@ -621,23 +589,72 @@ func typeof(v interface{}) string {
 // needs more work (?)
 // http://localhost:8983/solr/admin/cores?action=CREATE&name=cot&instanceDir=cot&configSet=_default
 // https://stackoverflow.com/questions/21619947/create-new-cores-in-solr-via-http
-func CreateCore(coreName string) (string, error) {
+func Create(clientId, apikey, index string) error {
 	ca, err := solr.NewCoreAdmin(solrUrl)
-
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	v := url.Values{}
-	v.Add("name", coreName)
-	v.Add("instanceDir", coreName)
-	v.Add("configSet", "_default")
-
-	res, err := ca.Action("CREATE", &v)
+	// add apikey and index to clientindices
+	// start of clientindices region
+	clientIndicesExist, err := Exists("clientindices")
 	if err != nil {
-		return "", err
+		return err
 	}
-	return util.ResponseJson(res), nil
+
+	if !clientIndicesExist {
+		v := url.Values{}
+		v.Add("name", "clientindices")
+		v.Add("instanceDir", "clientindices")
+		v.Add("configSet", "_default")
+
+		_, err := ca.Action("CREATE", &v)
+		if err != nil {
+			return err
+		}
+	}
+
+	ci := "clientindices"
+
+	indicescore, err := solr.NewSolrInterface(solrUrl, ci)
+	if err != nil {
+		return err
+	}
+
+	var documents []solr.Document
+	clientIndice := make(solr.Document)
+	clientIndice.Set("apikey", apikey)
+	clientIndice.Set("index", index)
+	documents = append(documents, clientIndice)
+
+	_, err = indicescore.Add(documents, 1, nil)
+	if err != nil {
+		return err
+	}
+	_, err = Reload(ci)
+	if err != nil {
+		return err
+	}
+	// end of clientindices region
+
+	clientDocumentsExist, err := Exists("clientdocuments_" + clientId)
+	if err != nil {
+		return err
+	}
+
+	if !clientDocumentsExist {
+		v := url.Values{}
+		v.Add("name", "clientdocuments_"+clientId)
+		v.Add("instanceDir", "clientdocuments_"+clientId)
+		v.Add("configSet", "_default")
+
+		_, err = ca.Action("CREATE", &v)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Status of all Solr cores.
@@ -673,7 +690,7 @@ func StatusCore(coreName string) (string, error) {
 }
 
 // returns false if no
-func CoreExists(core string) (bool, error) {
+func Exists(core string) (bool, error) {
 	res, err := StatusAll()
 	if err != nil {
 		return false, err
@@ -749,4 +766,73 @@ func check(e error) {
 	if e != nil {
 		fmt.Println(e)
 	}
+}
+
+func randomint(min int, max int) int {
+	return rand.Intn(max-min) + min
+}
+
+func randombool() bool {
+	return randomint(1, 100) > 50
+}
+
+func write() {
+
+	cd := ClientDocument{
+		ClientDocumentShort: ClientDocumentShort{DocumentID: util.GetID()},
+		DocumentTitle:       fmt.Sprintf("Document-Title-%s", util.RandStringBytes(4)),
+		Document:            fmt.Sprintf("Document-%s", util.RandStringBytes(64)),
+		LanguageCode:        fmt.Sprintf("LanguageCode-%s", util.RandStringBytes(2)),
+		CreatedAt:           randomint(1, 100),
+		Sentiment:           fmt.Sprintf("Sentiment-%s", util.RandStringBytes(2)),
+	}
+
+	//type Entity struct {
+	//	Phrase          string      `json:"title"`
+	//	Title           string      `json:"full_title"`
+	//	Classifications []string    `json:"classifications"`
+	//	Positions       []*Position `json:"positions"`
+	//	UrlPageTitle    string
+	//	inbound         int
+	//	checkContext    bool
+	//	doc2vecID       string
+	//	aliases         []string
+	//}
+
+	esf := []*Entity{}
+	for i := 0; i < randomint(3, 7); i++ {
+
+		poss := []*Position{}
+		end := 1
+		for i := 0; i < randomint(3, 7); i++ {
+			start := randomint(end, end+100)
+			end = randomint(start, start+100)
+			p := Position{Start: start, End: end}
+			poss = append(poss, &p)
+		}
+
+		e := Entity{
+			Phrase:          fmt.Sprintf("Phrase-%s", util.RandStringBytes(16)),
+			Title:           fmt.Sprintf("Title-%s", util.RandStringBytes(4)),
+			Classifications: []string{util.RandStringBytes(8), util.RandStringBytes(8), util.RandStringBytes(8), util.RandStringBytes(8)},
+			Positions:       poss,
+			UrlPageTitle:    fmt.Sprintf("UrlPageTitle-%s", util.RandStringBytes(2)),
+			inbound:         randomint(1, 100),
+			checkContext:    randombool(),
+			doc2vecID:       util.RandStringBytes(8),
+			aliases:         []string{util.RandStringBytes(8), util.RandStringBytes(8), util.RandStringBytes(8), util.RandStringBytes(8)},
+		}
+		esf = append(esf, &e)
+	}
+
+	ts := []uint64{}
+	for i := 0; i < randomint(3, 17); i++ {
+		ts = append(ts, util.GetID())
+	}
+
+	err := AddDocument(clientIdTest, &cd, esf, ts)
+	check(err)
+
+	//func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, themes []uint64) error {
+
 }
