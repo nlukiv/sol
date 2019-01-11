@@ -2,28 +2,21 @@ package main
 
 import (
 	"./util"
-	"encoding/json"
 	"fmt"
 	"github.com/vanng822/go-solr/solr"
+	"math"
 	"math/rand"
 	"net/url"
-	"reflect"
 	"strconv"
-	"time"
+	"strings"
 )
 
-const clientIdTest = "4444"
+const clientIdTest = "222"
 
 //const solrUrl = "http://185.227.108.145:8983/solr"
 const solrUrl = "http://localhost:8983/solr"
 
 type Core string
-
-const (
-	DOCUMENTS Core = "clientdocuments"
-	ENTITIES  Core = "clientdocumententities"
-	THEMES    Core = "clientdocumentthemes"
-)
 
 type DocPropertyType int
 
@@ -131,19 +124,19 @@ type ClientStorage interface {
 	// retrieves documents Id for documents that satisfy given condition
 	// if `since` is non-nil and set then query returns IDs for documents dated from `since`
 	// if `until` is non-nil and set then query returns IDs for documents dated before `until`
-	GetDocumentIDs(clientId string, cond PropertyCondition, since, until *int) ([]uint64, error)
+	// GetDocumentIDs(clientId string, cond PropertyCondition, since, until *int) ([]uint64, error)
 
 	// retrieves document entities across al documents
 	// if `since` is non-nil and set then query returns entities for documents dated from `since`
 	// if `until` is non-nil and set then query returns entities for documents dated before `until`
-	GetEntities(clientId string, since, until *int) ([]*ClientDocumentEntityShort, error)
+	// GetEntities(clientId string, since, until *int) ([]*ClientDocumentEntityShort, error)
 
 	// retrieves documents with given IDs
 	// if full is not set, only document ID and timestamp should be filled
-	GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, error)
+	// GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, error)
 
 	// build index with data provided
-	AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, themes []uint64) error
+	// AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, themes []uint64) error
 
 	// deletes document with 'docID' from client 'clientID' collection
 	// DeleteDocument(clientID, docID string) error
@@ -163,64 +156,56 @@ type ClientStorage interface {
 
 func main() {
 
-	//pc := PropertyCondition{Condition: LIKE, Value: "keu", Property: SENTIMENT}
-	//
-	//di, err := GetDocumentIDs(clientIdTest, pc)
-	//check(err)
-	//
-	//fmt.Println(di)
-	//a, e := GetEntities(clientIdTest)
-	//check(e)
-	//fmt.Println(a)
-	//ids := []uint64{321, 123}
-	//docs, _ := GetDocuments(clientIdTest, ids)
-	//
-	//fmt.Println(docs)
-	//DeleteIndex(clientIdTest)
-	//write()
-	//DeleteDocument("345", clientIdTest)
-	rand.Seed(time.Now().UnixNano())
-
-	err := Create(clientIdTest, "apikey"+util.RandStringBytes(16), "index"+util.RandStringBytes(8))
-	check(err)
-
-	for i := 0; i < 3; i++ {
-		write()
-	}
-	//_, err := GetEntities(clientIdTest,nil,nil)
-	//check(err)
-
 }
 
-// get docs with sentiment=neu: PropertyCondition.Condition=EQUAL PropertyCondition.Value=neu, PropertyCondition.Property=sentiment
-func GetDocumentIDs(clientID string, cond PropertyCondition, since, until *int) ([]uint64, error) {
+// checks if BackendStorage exists and connection is available
+func CheckConnection() error {
 
-	var core string
+	_, err := StatusAll() // StatusAll method is required for Exists method
+	return err
+}
 
-	// define which core to send query to
-	switch cond.Property {
-	case LANGUAGE, SENTIMENT, CREATED:
-		core = fmt.Sprintf("%s_%s", DOCUMENTS, clientID)
-	case ENTITY:
-		core = fmt.Sprintf("%s_%s", ENTITIES, clientID)
-	case THEME:
-		core = fmt.Sprintf("%s_%s", THEMES, clientID)
-	}
+// retrieves documents Id for documents that satisfy given condition
+// if `since` is non-nil and set then query returns IDs for documents dated from `since`
+// if `until` is non-nil and set then query returns IDs for documents dated before `until`
+func GetDocumentIDs(clientId string, cond PropertyCondition, since, until *int) ([]uint64, error) {
 
-	// create connection to the core
-	si, err := solr.NewSolrInterface(solrUrl, core)
+	cd := "clientdocuments_" + clientId
+
+	si, err := solr.NewSolrInterface(solrUrl, cd)
 	if err != nil {
 		return nil, err
 	}
-	query := solr.NewQuery()
-	query.FieldList("documentID")
 
+	type PropertyCondition struct {
+		Condition ComparerType
+		Value     string
+		Property  DocPropertyType
+	}
+
+	sinceStr := "*"
+	untilStr := "*"
+	if since != nil {
+		sinceStr = strconv.Itoa(*since)
+	}
+	if until != nil {
+		untilStr = strconv.Itoa(*until)
+	}
+
+	var conditionInQuery string
 	switch cond.Condition {
 	case EQUAL:
-		query.Q(fmt.Sprintf("%s:%s", cond.Property, cond.Value))
+		conditionInQuery = fmt.Sprintf("%s:%s", cond.Property, cond.Value)
 	case LIKE:
-		query.Q(fmt.Sprintf("%s:%s~", cond.Property, cond.Value))
+		conditionInQuery = fmt.Sprintf("%s:%s~", cond.Property, cond.Value)
+	default:
+		return nil, fmt.Errorf("condition not recognized as EQUAL or LIKE")
 	}
+
+	query := solr.NewQuery()
+	query.Q(fmt.Sprintf("%s AND createdAt:[%s TO %s]", conditionInQuery, sinceStr, untilStr))
+	query.Rows(math.MaxInt32)
+	query.FieldList("documentID")
 
 	s := si.Search(query)
 	r, err := s.Result(nil)
@@ -228,16 +213,14 @@ func GetDocumentIDs(clientID string, cond PropertyCondition, since, until *int) 
 		return nil, err
 	}
 
-	var res []uint64
+	var documentIDs []uint64
 	for _, doc := range r.Results.Docs {
 		k := doc.Get("documentID")
-		res = append(res, uint64(k.([]interface{})[0].(float64)))
+		documentIDs = append(documentIDs, uint64(k.([]interface{})[0].(float64)))
 	}
 
-	return res, nil
+	return documentIDs, nil
 }
-
-//func GetEntities(clientID string) ([]*ClientDocumentEntity, error)
 
 //retrieves document entities across al documents
 //if `since` is non-nil and set then query returns entities for documents dated from `since`
@@ -246,8 +229,6 @@ func GetEntities(clientID string, since, until *int) ([]*ClientDocumentEntitySho
 	if *since > *until {
 		return nil, fmt.Errorf("since is later than until")
 	}
-
-	var entities []*ClientDocumentEntityShort
 
 	si, err := solr.NewSolrInterface(solrUrl, fmt.Sprintf("clientdocuments_%s", clientID))
 	if err != nil {
@@ -265,7 +246,8 @@ func GetEntities(clientID string, since, until *int) ([]*ClientDocumentEntitySho
 
 	query := solr.NewQuery()
 	query.Q(fmt.Sprintf("createdAt:[%s TO %s]", sinceStr, untilStr))
-	query.Rows(2147483647) // todo add sophisticated rows handling - pagination
+	query.Rows(math.MaxInt32) // todo add sophisticated rows handling - pagination
+	query.FieldList("documentID AND englishEntities")
 	s := si.Search(query)
 
 	r, err := s.Result(nil)
@@ -273,197 +255,79 @@ func GetEntities(clientID string, since, until *int) ([]*ClientDocumentEntitySho
 		return nil, err
 	}
 	fmt.Println(len(r.Results.Docs))
+	fmt.Println(r.Results.Docs)
 
-	data, err := json.Marshal(r.Results.Docs)
-	if err != nil {
-		return nil, err
-	}
-	fmt.Println(string(data))
-
-	var doc []solr.Document
-	err = json.Unmarshal(data, &doc)
-	if err != nil {
-		return nil, err
-	}
-	//fmt.Println(doc)
-
-	//for _, item := range r.Results.Docs {
-	//	docID := uint64(item.Get("documentID").([]interface{})[0].(float64))
-	//	englishEntity := item.Get("englishEntity").([]interface{})[0].(string)
-	//	entity := item.Get("entity").([]interface{})[0].(string)
-	//	positions := util.ToIntSlice(item.Get("positions").([]interface{}))
-	//
-	//	cdes := ClientDocumentEntityShort{docID, englishEntity}
-	//
-	//	clientDocumentEntity := ClientDocumentEntityShort{
-	//		cdes,
-	//		docID, // todo not sure if this ID is required here
-	//		entity,
-	//		positions,
-	//	}
-	//
-	//	entities = append(entities, &clientDocumentEntity)
-	//}
-	//
-	//for i, a := range entities {
-	//	fmt.Printf("%d:  %t\n", i, a)
-	//}
-	return entities, nil
-}
-
-// get all documents for specified ids
-
-//todo
-//func GetDocuments(clientID string, ids []uint64) ([]*ClientDocument, error) {
-//	var docs []*ClientDocument
-//
-//	si, err := solr.NewSolrInterface("http://localhost:8983/solr", fmt.Sprintf("%s_%s", DOCUMENTS, clientID))
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	for _, id := range ids {
-//
-//		// another possible implementation is to not send each id in a separate query, but
-//		// use filterQuery and put all ids in there. example
-//		// http://localhost:8983/solr/clientdocuments_2840/select?fq=documentID:(123%20OR%20234)&q=*:*
-//		// downside - this way, queries may get TOO long if the id list is long
-//		// https://stackoverflow.com/questions/7594915/apache-solr-or-in-filter-query
-//
-//		query := solr.NewQuery()
-//		query.Q(fmt.Sprintf("documentID:%d", id))
-//		s := si.Search(query)
-//		r, err := s.Result(nil)
-//		if err != nil {
-//			return nil, err
-//		}
-//		//todo handle absence of document for current id
-//		doc := r.Results.Docs[0] // we definitely get one element, since querying by unique id
-//		docID := doc.Get("documentID")
-//		title := doc.Get("documentTitle").(string)
-//		document := doc.Get("document").(string)
-//		lang := doc.Get("languageCode").(string)
-//		created, err := util.StringToTime(doc.Get("created").(string))
-//		if err != nil {
-//			return nil, err
-//		}
-//		sentiment := doc.Get("sentiment").(string)
-//
-//		cds := ClientDocumentShort{docID.(uint64)}
-//		clientDocument := ClientDocument{
-//			cds,
-//			title,
-//			document,
-//			lang,
-//			created,
-//			sentiment,
-//		}
-//
-//		docs = append(docs, &clientDocument)
-//	}
-//
-//	return docs, nil
-//}
-
-// checks if BackendStorage exists and connection is available
-func CheckConnection() error {
-	_, err := StatusAll()
-	return err
-}
-
-// checks that client's storage exists. Creates new one if not
-
-//func EnsureClientStorage(clientID string) error {
-
-//	corePrefixes := []Core{DOCUMENTS, ENTITIES, THEMES}
-//
-//	for _, elem := range corePrefixes {
-//		core := fmt.Sprintf("%s_%s", elem, clientID)
-//
-//		coreExists, err := Exists(core)
-//		if err != nil {
-//			return err
-//		}
-//
-//		if !coreExists {
-//			_, err := Create(core)
-//			if err != nil {
-//				return err
-//			}
-//		}
-//	}
-//	return nil
-//}
-
-// drops entire index with 'clientID'
-func DeleteIndex(indexID, clientID, apiKey string) error {
-	cd := "clientdocuments_" + clientID
-
-	coreExists, err := Exists(cd)
-	if err != nil {
-		return err
-	}
-
-	if coreExists {
-		_, err := DeleteCore(cd, true)
-		if err != nil {
-			return err
+	clientDocumentEntitySlice := []*ClientDocumentEntityShort{}
+	for _, item := range r.Results.Docs {
+		a := item.Get("documentID").([]interface{})[0].(float64)
+		fmt.Printf("%f\n", a)
+		docID := uint64(a)
+		englishEntities := item.Get("englishEntities").([]interface{})
+		for _, entity := range englishEntities {
+			clientDocumentEntity := ClientDocumentEntityShort{docID, entity.(string)}
+			clientDocumentEntitySlice = append(clientDocumentEntitySlice, &clientDocumentEntity)
 		}
 	}
 
-	ci := "clientindices"
-
-	si, err := solr.NewSolrInterface(solrUrl, ci)
-	if err != nil {
-		return err
-	}
-
-	params := &url.Values{}
-	params.Add("commit", "true")
-
-	_, err = si.Delete(map[string]interface{}{"query": fmt.Sprintf("apikey:%s AND index:%s", apiKey, indexID)}, params)
-	if err != nil {
-		return err
-	}
-
-	_, err = Reload(cd)
-	return err
-
-	return nil
+	return clientDocumentEntitySlice, nil
 }
 
-// returns all indices stored for account with ApiKey
-func GetIndicesForAccount(apikey string) ([]string, error) {
-	var indices []string
+// retrieves documents with given IDs
+// if full is not set, only document ID and timestamp should be filled
+func GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, error) {
+	cd := "clientdocuments_" + clientId
 
-	ci := "clientindices"
-
-	si, err := solr.NewSolrInterface(solrUrl, ci)
+	si, err := solr.NewSolrInterface(solrUrl, cd)
 	if err != nil {
-		return []string{}, err
+		return nil, err
+	}
+
+	idsStr := []string{}
+	for _, number := range ids {
+		idsStr = append(idsStr, strconv.FormatUint(number, 10))
 	}
 
 	query := solr.NewQuery()
-	query.Q(fmt.Sprintf("apikey:%s", apikey))
-	query.Rows(2147483647) // todo add sophisticated rows handling - pagination
+	query.Q(fmt.Sprintf("documentID:(%s)", strings.Join(idsStr, " OR ")))
+	query.Rows(math.MaxInt32) // todo add sophisticated row
 	s := si.Search(query)
+
 	r, err := s.Result(nil)
 	if err != nil {
 		return nil, err
 	}
 
+	clientDocumentsSlice := []*ClientDocument{}
+
 	for _, item := range r.Results.Docs {
-		index := item.Get("index").([]interface{})
-		indices = append(indices, index[0].(string))
+
+		var title, document, lang, sentiment string
+
+		if full {
+			title = item.Get("documentTitle").([]interface{})[0].(string)
+			document = item.Get("document").([]interface{})[0].(string)
+			lang = item.Get("languageCode").([]interface{})[0].(string)
+			sentiment = item.Get("sentiment").([]interface{})[0].(string)
+
+		}
+
+		cds := ClientDocumentShort{DocumentID: uint64(item.Get("documentID").([]interface{})[0].(float64))}
+
+		doc := ClientDocument{
+			ClientDocumentShort: cds,
+			DocumentTitle:       title,
+			Document:            document,
+			LanguageCode:        lang,
+			CreatedAt:           item.Get("createdAt").([]interface{})[0].(int),
+			Sentiment:           sentiment,
+		}
+
+		clientDocumentsSlice = append(clientDocumentsSlice, &doc)
 	}
 
-	return indices, nil
+	return clientDocumentsSlice, nil
 
 }
-
-//// Add document to client index
-//func AddDocument(documentID uint64, clientID string, title, text, languageCode, sentiment string,
-//	entitiesFound []util.Entity, themes []string) error
 
 // build index with data provided
 func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, themes []uint64) error {
@@ -475,21 +339,10 @@ func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, 
 		return err
 	}
 
-	cde := []solr.Document{}
-	ee := make(solr.Document)
+	var englishEntities, entities []string
 	for _, entity := range entitiesFound {
-		var positions []int
-		for _, pos := range entity.Positions {
-			positions = append(positions, pos.Start, pos.End)
-		}
-		e := make(solr.Document)
-		e.Set("DocumentID", doc.DocumentID)
-		e.Set("EnglishEntity", entity.UrlPageTitle)
-		e.Set("ID", util.GetID())
-		e.Set("Entity", entity.UrlPageTitle)
-		e.Set("Positions", positions)
-		cde = append(cde, e)
-		ee = e
+		englishEntities = append(englishEntities, entity.UrlPageTitle)
+		entities = append(entities, entity.UrlPageTitle)
 	}
 
 	var documents []solr.Document
@@ -501,8 +354,8 @@ func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, 
 	clientDocument.Set("createdAt", doc.CreatedAt)
 	clientDocument.Set("sentiment", doc.Sentiment)
 	clientDocument.Set("themes", themes)
-	clientDocument.Set("entities", cde)
-	clientDocument.Set("entityTry", ee)
+	clientDocument.Set("entities", entities)
+	clientDocument.Set("englishEntities", englishEntities)
 	documents = append(documents, clientDocument)
 
 	_, err = si.Add(documents, 1, nil)
@@ -510,49 +363,7 @@ func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, 
 		return err
 	}
 
-	//
-	////2. Створється запис в табличку `clientdocumententities_%indexID%` з наступними полями:
-	//// `documentID, entity, englishEntity, positions`. всі дані беруться з аргументу `entitiesFound []*entities.Entity`
-	//
-	//cde := "clientdocumententities_" + clientID
-	//si, err = solr.NewSolrInterface(solrUrl, cde)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//documents = nil
-	//for _, entity := range entitiesFound {
-	//	clientDocumentEntity := make(solr.Document)
-	//	clientDocumentEntity.Set("documentID", documentID)
-	//	clientDocumentEntity.Set("entity", entity.Entity)
-	//	clientDocumentEntity.Set("englishEntity", entity.EnglishEntity)
-	//	clientDocumentEntity.Set("positions", entity.Positions)
-	//	documents = append(documents, clientDocumentEntity)
-	//}
-	//
-	//_, err = si.Add(documents, 1, nil)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//// 3. Створється запис в табличку `clientdocumentthemes_%indexID%` з наступними полями: `themeid, documentID`. (edited)
-	//
-	//cdt := "clientdocumentthemes_" + clientID
-	//
-	//si, err = solr.NewSolrInterface(solrUrl, cdt)
-	//if err != nil {
-	//	return err
-	//}
-	//
-	//documents = nil
-	//for _, theme := range themes {
-	//	clientDocumentTheme := make(solr.Document)
-	//	clientDocumentTheme.Set("documentID", documentID)
-	//	clientDocumentTheme.Set("themeID", theme)
-	//	documents = append(documents, clientDocumentTheme)
-	//}
-
-	_, err = Reload(cd)
+	err = Reload(cd)
 	if err != nil {
 		return err
 	}
@@ -578,18 +389,32 @@ func DeleteDocument(documentID, clientID string) error {
 		return err
 	}
 
-	_, err = Reload(cd)
-	return err
+	err = Reload(cd)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func typeof(v interface{}) string {
-	return reflect.TypeOf(v).String()
+// returns false if no
+func Exists(core string) (bool, error) {
+	res, err := StatusAll()
+	if err != nil {
+		return false, err
+	}
+	query := util.JsonQuery(res)
+	_, err = query.Object("Response", "status", core)
+
+	if err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
-// needs more work (?)
-// http://localhost:8983/solr/admin/cores?action=CREATE&name=cot&instanceDir=cot&configSet=_default
-// https://stackoverflow.com/questions/21619947/create-new-cores-in-solr-via-http
+// creates new storage for client
 func Create(clientId, apikey, index string) error {
+
 	ca, err := solr.NewCoreAdmin(solrUrl)
 	if err != nil {
 		return err
@@ -631,7 +456,7 @@ func Create(clientId, apikey, index string) error {
 	if err != nil {
 		return err
 	}
-	_, err = Reload(ci)
+	err = Reload(ci)
 	if err != nil {
 		return err
 	}
@@ -652,6 +477,93 @@ func Create(clientId, apikey, index string) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// returns all indices stored for account with ApiKey
+func GetIndicesForAccount(apikey string) ([]string, error) {
+	var indices []string
+
+	ci := "clientindices"
+
+	si, err := solr.NewSolrInterface(solrUrl, ci)
+	if err != nil {
+		return []string{}, err
+	}
+
+	query := solr.NewQuery()
+	query.Q(fmt.Sprintf("apikey:%s", apikey))
+	query.Rows(2147483647) // todo add sophisticated rows handling - pagination
+	s := si.Search(query)
+	r, err := s.Result(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, item := range r.Results.Docs {
+		index := item.Get("index").([]interface{})
+		indices = append(indices, index[0].(string))
+	}
+
+	return indices, nil
+
+}
+
+// drops entire index with 'clientID'
+func DeleteIndex(indexID, clientID, apiKey string) error {
+	cd := "clientdocuments_" + clientID
+
+	coreExists, err := Exists(cd)
+	if err != nil {
+		return err
+	}
+
+	if coreExists {
+		_, err := DeleteCore(cd, true)
+		if err != nil {
+			return err
+		}
+	}
+
+	ci := "clientindices"
+
+	si, err := solr.NewSolrInterface(solrUrl, ci)
+	if err != nil {
+		return err
+	}
+
+	params := &url.Values{}
+	params.Add("commit", "true")
+
+	_, err = si.Delete(map[string]interface{}{"query": fmt.Sprintf("apikey:%s AND index:%s", apiKey, indexID)}, params)
+	if err != nil {
+		return err
+	}
+
+	err = Reload(cd)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Reload specific Solr core.
+// Return type - string of json
+func Reload(coreName string) error {
+	ca, err := solr.NewCoreAdmin(solrUrl)
+	if err != nil {
+		return err
+	}
+
+	v := url.Values{}
+	v.Add("core", coreName)
+
+	_, err = ca.Action("RELOAD", &v)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -689,21 +601,6 @@ func StatusCore(coreName string) (string, error) {
 	return util.ResponseJson(res), nil
 }
 
-// returns false if no
-func Exists(core string) (bool, error) {
-	res, err := StatusAll()
-	if err != nil {
-		return false, err
-	}
-	query := util.JsonQuery(res)
-	_, err = query.Object("Response", "status", core)
-
-	if err != nil {
-		return false, nil
-	}
-	return true, nil
-}
-
 // Delete(unload) specific Solr core.
 // Return type - string of json
 func DeleteCore(coreName string, deleteIndex bool) (string, error) {
@@ -722,25 +619,6 @@ func DeleteCore(coreName string, deleteIndex bool) (string, error) {
 	return util.ResponseJson(res), nil
 }
 
-// Reload specific Solr core.
-// Return type - string of json
-func Reload(coreName string) (string, error) {
-	ca, err := solr.NewCoreAdmin(solrUrl)
-	if err != nil {
-		return "", err
-	}
-
-	v := url.Values{}
-	v.Add("core", coreName)
-
-	res, err := ca.Action("RELOAD", &v)
-	if err != nil {
-		return "", err
-	}
-
-	return util.ResponseJson(res), nil
-}
-
 // Reload all Solr cores.
 // Return type - string of json
 func ReloadAll() error {
@@ -754,7 +632,7 @@ func ReloadAll() error {
 		return err
 	}
 	for k := range cor {
-		_, err := Reload(k)
+		err = Reload(k)
 		if err != nil {
 			return err
 		}

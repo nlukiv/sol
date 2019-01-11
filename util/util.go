@@ -10,7 +10,6 @@ import (
 	"math/rand"
 	"net/http"
 	"strings"
-	"time"
 )
 
 func FormatRequest(r *http.Request) string {
@@ -48,15 +47,9 @@ func JsonQuery(js string) *jsonq.JsonQuery {
 }
 
 func ResponseJson(response *solr.SolrResponse) string {
-	json, err := json.Marshal(*response)
+	jso, err := json.Marshal(*response)
 	check(err)
-	return string(json)
-}
-
-func MapToJson(response map[string]interface{}) string {
-	json, err := json.Marshal(response)
-	check(err)
-	return string(json)
+	return string(jso)
 }
 
 func check(e error) {
@@ -72,16 +65,10 @@ func GetID() uint64 {
 	return h.Sum64()
 }
 
-//
-//func GetID() (uint64, error) {
-//	bytes := ksuid.New().Bytes()
-//	h := fnv.New64a()
-//	_, err := h.Write(bytes)
-//	if err != nil {
-//		return 0, err
-//	}
-//	return h.Sum64(), nil
-//}
+func GetIDstr() string {
+	bytes := ksuid.New()
+	return bytes.String()
+}
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -91,34 +78,4 @@ func RandStringBytes(n int) string {
 		b[i] = letterBytes[rand.Intn(len(letterBytes))]
 	}
 	return string(b)
-}
-
-type Entity struct {
-	DocumentID    uint64
-	Entity        string
-	EnglishEntity string
-	Positions     []int
-}
-
-func MakeEntity(documentID uint64, entity, englishEntity string, positions []int) Entity {
-	return Entity{DocumentID: documentID, Entity: entity, EnglishEntity: englishEntity, Positions: positions}
-}
-
-func StringToTime(s string) (time.Time, error) {
-	layout := "2006-01-02 15:04:05.000"
-	t, err := time.Parse(layout, s)
-	if err != nil {
-		t := time.Time{}
-		return t, err
-	}
-
-	return t, nil
-}
-
-func ToIntSlice(s []interface{}) []int {
-	ints := make([]int, len(s))
-	for i := range s {
-		ints[i] = int(s[i].(float64))
-	}
-	return ints
 }
