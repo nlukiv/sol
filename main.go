@@ -282,51 +282,79 @@ func GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, 
 		return nil, err
 	}
 
-	idsStr := []string{}
-	for _, number := range ids {
-		idsStr = append(idsStr, strconv.FormatUint(number, 10))
-	}
+	clientDocumentsSlice := []*ClientDocument{}
 
-	query := solr.NewQuery()
-	query.Q(fmt.Sprintf("documentID:(%s)", strings.Join(idsStr, " OR ")))
-	query.Rows(math.MaxInt32) // todo add sophisticated row
-	s := si.Search(query)
-
-	r, err := s.Result(nil)
+	chunks, err := splitToChunks(ids, 300)
 	if err != nil {
 		return nil, err
 	}
 
-	clientDocumentsSlice := []*ClientDocument{}
+	for _, chunk := range chunks {
+		query := solr.NewQuery()
+		query.Q(fmt.Sprintf("documentID:(%s)", strings.Join(chunk, " OR ")))
+		query.Rows(math.MaxInt32) // todo add sophisticated row
+		s := si.Search(query)
 
-	for _, item := range r.Results.Docs {
-
-		var title, document, lang, sentiment string
-
-		if full {
-			title = item.Get("documentTitle").([]interface{})[0].(string)
-			document = item.Get("document").([]interface{})[0].(string)
-			lang = item.Get("languageCode").([]interface{})[0].(string)
-			sentiment = item.Get("sentiment").([]interface{})[0].(string)
-
+		r, err := s.Result(nil)
+		if err != nil {
+			return nil, err
 		}
 
-		cds := ClientDocumentShort{DocumentID: uint64(item.Get("documentID").([]interface{})[0].(float64))}
+		for _, item := range r.Results.Docs {
 
-		doc := ClientDocument{
-			ClientDocumentShort: cds,
-			DocumentTitle:       title,
-			Document:            document,
-			LanguageCode:        lang,
-			CreatedAt:           item.Get("createdAt").([]interface{})[0].(int),
-			Sentiment:           sentiment,
+			var title, document, lang, sentiment string
+
+			if full {
+				title = item.Get("documentTitle").([]interface{})[0].(string)
+				document = item.Get("document").([]interface{})[0].(string)
+				lang = item.Get("languageCode").([]interface{})[0].(string)
+				sentiment = item.Get("sentiment").([]interface{})[0].(string)
+
+			}
+
+			cds := ClientDocumentShort{DocumentID: uint64(item.Get("documentID").([]interface{})[0].(float64))}
+
+			doc := ClientDocument{
+				ClientDocumentShort: cds,
+				DocumentTitle:       title,
+				Document:            document,
+				LanguageCode:        lang,
+				CreatedAt:           item.Get("createdAt").([]interface{})[0].(int),
+				Sentiment:           sentiment,
+			}
+
+			clientDocumentsSlice = append(clientDocumentsSlice, &doc)
 		}
-
-		clientDocumentsSlice = append(clientDocumentsSlice, &doc)
 	}
 
 	return clientDocumentsSlice, nil
 
+}
+
+func splitToChunks(slice []uint64, chunkSize int) ([][]string, error) {
+	if chunkSize < 1 {
+		return nil, fmt.Errorf("invalid chunkSize input")
+	}
+
+	idsStr := []string{}
+	for _, number := range slice {
+		idsStr = append(idsStr, strconv.FormatUint(number, 10))
+	}
+
+	chunks := [][]string{}
+
+	chunkNumber := len(idsStr) / chunkSize
+
+	for i := 0; i < chunkNumber; i++ {
+		chunk := idsStr[i*chunkSize : (i+1)*chunkSize]
+		chunks = append(chunks, chunk)
+	}
+
+	if len(idsStr)%chunkSize != 0 {
+		chunks = append(chunks, idsStr[chunkSize*len(chunks):])
+	}
+
+	return chunks, nil
 }
 
 // build index with data provided
