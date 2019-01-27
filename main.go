@@ -276,6 +276,7 @@ func GetEntities(clientID string, since, until *int) ([]*ClientDocumentEntitySho
 // if full is not set, only document ID and timestamp should be filled
 func GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, error) {
 	cd := "clientdocuments_" + clientId
+	chunkSize := 300
 
 	si, err := solr.NewSolrInterface(solrUrl, cd)
 	if err != nil {
@@ -284,7 +285,7 @@ func GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, 
 
 	clientDocumentsSlice := []*ClientDocument{}
 
-	chunks, err := splitToChunks(ids, 300)
+	chunks, err := splitToChunks(ids, chunkSize)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +293,10 @@ func GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, 
 	for _, chunk := range chunks {
 		query := solr.NewQuery()
 		query.Q(fmt.Sprintf("documentID:(%s)", strings.Join(chunk, " OR ")))
-		query.Rows(math.MaxInt32) // todo add sophisticated row
+		query.Rows(chunkSize) // todo add sophisticated row
+		if !full {
+			query.FieldList("documentID AND createdAt")
+		}
 		s := si.Search(query)
 
 		r, err := s.Result(nil)
@@ -319,7 +323,7 @@ func GetDocuments(clientId string, ids []uint64, full bool) ([]*ClientDocument, 
 				DocumentTitle:       title,
 				Document:            document,
 				LanguageCode:        lang,
-				CreatedAt:           item.Get("createdAt").([]interface{})[0].(int),
+				CreatedAt:           int(item.Get("createdAt").([]interface{})[0].(float64)),
 				Sentiment:           sentiment,
 			}
 
@@ -375,7 +379,7 @@ func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, 
 
 	var documents []solr.Document
 	clientDocument := make(solr.Document)
-	clientDocument.Set("documentID", doc.DocumentID)
+	clientDocument.Set("documentID", doc.ClientDocumentShort.DocumentID)
 	clientDocument.Set("documentTitle", doc.DocumentTitle)
 	clientDocument.Set("document", doc.Document)
 	clientDocument.Set("languageCode", doc.LanguageCode)
@@ -388,7 +392,7 @@ func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, 
 
 	_, err = si.Add(documents, 1, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("error while adding document to Solr. No such core exists")
 	}
 
 	err = Reload(cd)
@@ -682,11 +686,17 @@ func randombool() bool {
 	return randomint(1, 100) > 50
 }
 
-func write() {
+type Write struct {
+	cd  ClientDocument
+	esf []*Entity
+	ts  []uint64
+}
+
+func write(clientId string) Write {
 
 	cd := ClientDocument{
 		ClientDocumentShort: ClientDocumentShort{DocumentID: util.GetID()},
-		DocumentTitle:       fmt.Sprintf("Document-Title-%s", util.RandStringBytes(4)),
+		DocumentTitle:       fmt.Sprintf("DocumentTitle-%s", util.RandStringBytes(4)),
 		Document:            fmt.Sprintf("Document-%s", util.RandStringBytes(64)),
 		LanguageCode:        fmt.Sprintf("LanguageCode-%s", util.RandStringBytes(2)),
 		CreatedAt:           randomint(1, 100),
@@ -736,9 +746,9 @@ func write() {
 		ts = append(ts, util.GetID())
 	}
 
-	err := AddDocument(clientIdTest, &cd, esf, ts)
+	err := AddDocument(clientId, &cd, esf, ts)
 	check(err)
 
-	//func AddDocument(clientId string, doc *ClientDocument, entitiesFound []*Entity, themes []uint64) error {
+	return Write{cd, esf, ts}
 
 }
